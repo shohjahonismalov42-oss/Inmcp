@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import {
   clearAuditLogs,
   getAuditLogs,
+  getDownloadedFile,
   getPolicy,
   handleMcpJsonRpc,
   updatePolicy,
@@ -215,6 +216,20 @@ async function startServer() {
   app.delete('/api/logs', (_req: Request, res: Response) => {
     clearAuditLogs();
     res.json({ cleared: true });
+  });
+
+  app.get('/api/downloads/:id/:filename?', (req: Request, res: Response) => {
+    const item = getDownloadedFile(String(req.params.id || ''));
+    if (!item) {
+      return res.status(404).json({ error: 'Yuklab olingan fayl topilmadi yoki muddati tugagan.' });
+    }
+    res.setHeader('Content-Type', item.contentType);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${item.filename.replace(/"/g, '')}"`
+    );
+    res.setHeader('Content-Length', String(item.buffer.byteLength));
+    res.send(item.buffer);
   });
 
   app.get('/api/download/mcp-web-bridge.mjs', (_req: Request, res: Response) => {

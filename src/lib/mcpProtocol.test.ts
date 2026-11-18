@@ -16,6 +16,7 @@ test('MCP_TOOLS defines all 5 internet tools with valid input schemas', () => {
     'http_request',
     'extract_links',
     'check_url_health',
+    'download_file',
   ]);
   for (const tool of MCP_TOOLS) {
     assert.equal(tool.inputSchema.type, 'object');

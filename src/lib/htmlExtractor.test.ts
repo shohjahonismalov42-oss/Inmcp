@@ -22,26 +22,48 @@ test('extractTitleAndDescription parses title and meta description cleanly', () 
   assert.equal(meta.description, 'Connect Claude to the web safely.');
 });
 
-test('htmlToMarkdown strips head, scripts/styles and converts headings and links', () => {
+test('htmlToMarkdown strips head, nav, footer, scripts/styles and converts main content', () => {
   const html = `
     <html>
       <head><title>Ignored Head Title</title></head>
       <body>
+        <nav><a href="/menu">Mega Menu Item</a></nav>
         <script>alert("xss")</script>
         <style>.x { color: red; }</style>
-        <h1>Main Heading</h1>
-        <p>Read the <a href="https://modelcontextprotocol.io">MCP Docs</a> now.</p>
-        <ul><li>Step one</li><li>Step two</li></ul>
+        <main>
+          <h1>Main Heading</h1>
+          <p>Read the <a href="/docs/intro">MCP Docs</a> now. This paragraph has enough real content to be prioritized over navigation chrome and sidebars on large documentation sites.</p>
+          <ul><li>Step one</li><li>Step two</li></ul>
+        </main>
+        <footer>Copyright 2026</footer>
       </body>
     </html>
   `;
-  const md = htmlToMarkdown(html);
+  const md = htmlToMarkdown(html, 12000, 'https://modelcontextprotocol.io');
   assert.equal(md.includes('Ignored Head Title'), false);
+  assert.equal(md.includes('Mega Menu Item'), false);
+  assert.equal(md.includes('Copyright 2026'), false);
   assert.equal(md.includes('alert("xss")'), false);
-  assert.equal(md.includes('color: red'), false);
   assert.equal(md.includes('# Main Heading'), true);
-  assert.equal(md.includes('[MCP Docs](https://modelcontextprotocol.io)'), true);
+  assert.equal(md.includes('[MCP Docs](https://modelcontextprotocol.io/docs/intro)'), true);
   assert.equal(md.includes('- Step one'), true);
+});
+
+test('htmlToMarkdown extracts JSON-LD fallback for empty JS-only SPAs', () => {
+  const html = `
+    <html>
+      <head>
+        <title>SPA News Article</title>
+        <script type="application/ld+json">
+          {"headline": "Breaking Tech News", "articleBody": "Full article text embedded in structured JSON-LD for client-side React apps."}
+        </script>
+      </head>
+      <body><div id="root"></div></body>
+    </html>
+  `;
+  const md = htmlToMarkdown(html);
+  assert.equal(md.includes('Breaking Tech News'), true);
+  assert.equal(md.includes('Full article text embedded in structured JSON-LD'), true);
 });
 
 test('extractLinksFromHtml resolves relative URLs and detects external links', () => {

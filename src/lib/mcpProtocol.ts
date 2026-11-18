@@ -128,6 +128,36 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       required: ['url'],
     },
   },
+  {
+    name: 'download_file',
+    title: 'Fayl yuklab olish (PDF, JSON, Rasm, ZIP)',
+    description:
+      "Berilgan URL manzildan har qanday faylni (matn, JSON, CSV, rasm, PDF, arxiv) xavfsiz yuklab oladi. Matnli fayllarni to'liq matn sifatida, rasmlarni MCP image ko'rinishida, binar fayllarni esa Base64/resource va yuklab olish havolasi bilan qaytaradi.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description: 'Yuklab olinadigan faylning to‘liq http:// yoki https:// manzili.',
+        },
+        encoding: {
+          type: 'string',
+          enum: ['auto', 'utf8', 'base64'],
+          description: 'Qaytarish formati (standart auto).',
+        },
+        include_base64: {
+          type: 'boolean',
+          description: 'Katta binar fayllar uchun ham Base64 maʼlumotini qo‘shish.',
+        },
+        save_path: {
+          type: 'string',
+          description:
+            'Lokal stdio rejimida faylni saqlash yo‘li (masalan: ./downloads/file.pdf). Remote serverda ixtiyoriy.',
+        },
+      },
+      required: ['url'],
+    },
+  },
 ];
 
 export interface JsonRpcRequest {
@@ -253,7 +283,7 @@ export function generateClientConfig(
         url: endpointUrl,
         sseFallbackUrl: sseUrl,
         ...(authHeader ? { headers: { Authorization: `Bearer ${bearerToken}` } } : {}),
-        tools: ['web_search', 'web_fetch', 'http_request', 'extract_links', 'check_url_health'],
+        tools: ['web_search', 'web_fetch', 'http_request', 'extract_links', 'check_url_health', 'download_file'],
       },
     },
   };
@@ -277,6 +307,8 @@ export function generateStandaloneMcpScript(options: {
  * Node.js 18+ da hech qanday npm paketisiz to'g'ridan-to'g'ri ishlaydi.
  * Ishga tushirish: node mcp-web-bridge.mjs
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline';
 
 const PROTOCOL_VERSION = '${MCP_PROTOCOL_VERSION}';
@@ -306,12 +338,21 @@ function validateUrl(raw) {
   return u;
 }
 
-function htmlToMarkdown(html, maxChars = 12000) {
+function htmlToMarkdown(html, maxChars = 16000) {
   let t = html
     .replace(/<head[\\s\\S]*?<\\/head>/gi, '')
     .replace(/<script[\\s\\S]*?<\\/script>/gi, '')
     .replace(/<style[\\s\\S]*?<\\/style>/gi, '')
     .replace(/<noscript[\\s\\S]*?<\\/noscript>/gi, '')
+    .replace(/<svg[\\s\\S]*?<\\/svg>/gi, '')
+    .replace(/<nav\\b[^>]*>[\\s\\S]*?<\\/nav>/gi, '')
+    .replace(/<footer\\b[^>]*>[\\s\\S]*?<\\/footer>/gi, '')
+    .replace(/<aside\\b[^>]*>[\\s\\S]*?<\\/aside>/gi, '');
+  const mainMatch = t.match(/<main\\b[^>]*>([\\s\\S]*?)<\\/main>/i);
+  if (mainMatch && mainMatch[1].replace(/<[^>]+>/g, '').trim().length >= 200) {
+    t = mainMatch[1];
+  }
+  t = t
     .replace(/<h([1-6])[^>]*>([\\s\\S]*?)<\\/h\\1>/gi, (_, l, c) => '\\n\\n' + '#'.repeat(Number(l)) + ' ' + c.replace(/<[^>]+>/g, ' ').trim() + '\\n\\n')
     .replace(/<a\\s+[^>]*href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/gi, (_, href, txt) => '[' + txt.replace(/<[^>]+>/g, '').trim() + '](' + href + ')')
     .replace(/<li[^>]*>([\\s\\S]*?)<\\/li>/gi, (_, c) => '\\n- ' + c.replace(/<[^>]+>/g, ' ').trim())
@@ -334,7 +375,8 @@ async function fetchWithGuard(url, init = {}) {
       ...init,
       signal: ctrl.signal,
       headers: {
-        'User-Agent': 'MCP-Web-Bridge/1.0 (Claude Sandbox Gateway)',
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept-Language': 'uz-UZ,uz;q=0.9,en-US;q=0.8,en;q=0.7',
         ...(init.headers || {}),
       },
     });
@@ -393,6 +435,55 @@ async function handleToolCall(name, args = {}) {
       } catch {}
     }
     return { content: [{ type: 'text', text: JSON.stringify(links, null, 2) }] };
+  }
+  if (name === 'download_file') {
+    const rawUrl = String(args.url || '');
+    validateUrl(rawUrl);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+    try {
+      const res = await fetch(rawUrl, {
+        signal: ctrl.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        },
+      });
+      if (!res.ok) throw new Error('Yuklab olishda HTTP xato: ' + res.status);
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.byteLength > 10_000_000) throw new Error('Fayl hajmi 10 MB limitidan oshib ketdi');
+      const ct = (res.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim();
+      const fileName = decodeURIComponent((new URL(res.url).pathname.split('/').pop() || 'downloaded_file'));
+      let savedNote = '';
+      if (args.save_path) {
+        const dest = path.resolve(String(args.save_path));
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, buf);
+        savedNote = '\\nSaqlandi: ' + dest;
+      }
+      const isText = ct.startsWith('text/') || ct.includes('json') || ct.includes('xml') || ct.includes('javascript');
+      const isImg = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(ct);
+      if (isImg && args.encoding !== 'utf8') {
+        return {
+          content: [
+            { type: 'text', text: 'Fayl: ' + fileName + ' (' + buf.byteLength + ' bayt, ' + ct + ')' + savedNote },
+            { type: 'image', data: buf.toString('base64'), mimeType: ct },
+          ],
+        };
+      }
+      if (isText && args.encoding !== 'base64') {
+        return {
+          content: [{ type: 'text', text: 'Fayl: ' + fileName + ' (' + buf.byteLength + ' bayt, ' + ct + ')' + savedNote + '\\n\\n' + buf.toString('utf8').slice(0, 80000) }],
+        };
+      }
+      return {
+        content: [
+          { type: 'text', text: 'Fayl: ' + fileName + ' (' + buf.byteLength + ' bayt, ' + ct + ')' + savedNote },
+          { type: 'resource', resource: { uri: res.url, mimeType: ct, blob: buf.toString('base64') } },
+        ],
+      };
+    } finally {
+      clearTimeout(timer);
+    }
   }
   throw new Error('Noma\\'lum vosita: ' + name);
 }

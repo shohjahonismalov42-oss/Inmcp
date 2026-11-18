@@ -12,6 +12,7 @@ import {
   htmlToMarkdown,
   parseDuckDuckGoHtml,
 } from '../lib/htmlExtractor';
+import { classifyContentType, extractFilename } from '../lib/fileDownload';
 import {
   JsonRpcRequest,
   JsonRpcResponse,
@@ -51,6 +52,41 @@ let currentPolicy: SandboxPolicy = {
 };
 const auditLogs: AuditLogEntry[] = [];
 const MAX_AUDIT_LOGS = 100;
+
+export interface StoredDownload {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  sha256: string;
+  buffer: Buffer;
+  sourceUrl: string;
+  createdAt: number;
+}
+
+const downloadStore = new Map<string, StoredDownload>();
+const MAX_DOWNLOAD_CACHE_ITEMS = 20;
+const MAX_DOWNLOAD_FILE_BYTES = 10_000_000;
+
+export function getDownloadedFile(id: string): StoredDownload | undefined {
+  return downloadStore.get(id);
+}
+
+function saveDownloadedFile(item: Omit<StoredDownload, 'id' | 'createdAt'>): StoredDownload {
+  const id = crypto.randomUUID();
+  const record: StoredDownload = {
+    id,
+    createdAt: Date.now(),
+    ...item,
+  };
+  downloadStore.set(id, record);
+  while (downloadStore.size > MAX_DOWNLOAD_CACHE_ITEMS) {
+    const oldestKey = downloadStore.keys().next().value;
+    if (!oldestKey) break;
+    downloadStore.delete(oldestKey);
+  }
+  return record;
+}
 
 export function getPolicy(): SandboxPolicy {
   return {
@@ -163,8 +199,11 @@ async function guardedFetch(
       signal: controller.signal,
       headers: {
         'User-Agent':
-          'Mozilla/5.0 (compatible; MCP-Web-Bridge/1.0; +https://modelcontextprotocol.io)',
-        Accept: 'text/html,application/json,text/plain;q=0.9,*/*;q=0.8',
+          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'uz-UZ,uz;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Cache-Control': 'no-cache',
         ...(options.headers || {}),
       },
       body: method === 'POST' && options.body ? options.body : undefined,
@@ -219,13 +258,87 @@ class PolicyBlockedError extends Error {
   }
 }
 
+type McpContentItem =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string }
+  | { type: 'resource'; resource: { uri: string; mimeType: string; blob: string } };
+
+async function guardedBinaryFetch(
+  rawUrl: string,
+  maxBytes = MAX_DOWNLOAD_FILE_BYTES
+): Promise<{
+  status: number;
+  ok: boolean;
+  finalUrl: string;
+  contentType: string;
+  contentDisposition: string | null;
+  buffer: Buffer;
+}> {
+  const policy = getPolicy();
+  const check = validateTargetUrl(rawUrl, policy, 'GET');
+  if (!check.allowed) {
+    throw new PolicyBlockedError(check.reason || 'URL sandbox siyosati bilan bloklandi.');
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(policy.timeoutMs, 25_000));
+
+  try {
+    const response = await fetch(check.parsedUrl!.toString(), {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        Accept: '*/*',
+        'Accept-Language': 'uz-UZ,uz;q=0.9,en-US;q=0.8,en;q=0.7',
+      },
+    });
+
+    const finalUrl = response.url || check.parsedUrl!.toString();
+    const redirectCheck = validateTargetUrl(finalUrl, policy, 'GET');
+    if (!redirectCheck.allowed) {
+      throw new PolicyBlockedError(
+        `Yo'naltirish (redirect) SSRF himoyasi bilan bloklandi: ${redirectCheck.reason}`
+      );
+    }
+
+    const buf = Buffer.from(await response.arrayBuffer());
+    if (buf.byteLength > maxBytes) {
+      throw new Error(
+        `Fayl hajmi (${(buf.byteLength / 1_048_576).toFixed(2)} MB) ruxsat etilgan maksimal limitdan (${(
+          maxBytes / 1_048_576
+        ).toFixed(1)} MB) oshib ketdi.`
+      );
+    }
+
+    return {
+      status: response.status,
+      ok: response.ok,
+      finalUrl,
+      contentType: response.headers.get('content-type') || 'application/octet-stream',
+      contentDisposition: response.headers.get('content-disposition'),
+      buffer: buf,
+    };
+  } catch (err) {
+    if (err instanceof PolicyBlockedError) throw err;
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Faylni yuklab olish vaqti tugadi.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function executeTool(
   name: string,
   args: Record<string, unknown>
-): Promise<{ text: string; bytes: number; target: string }> {
+): Promise<{ content: McpContentItem[]; bytes: number; target: string; summaryText: string }> {
   if (name === 'web_fetch') {
     const url = String(args.url || '').trim();
-    const maxChars = Math.min(Math.max(Number(args.max_chars) || 12_000, 500), 40_000);
+    const maxChars = Math.min(Math.max(Number(args.max_chars) || 16_000, 500), 50_000);
     const includeLinks = Boolean(args.include_links);
 
     const res = await guardedFetch(url);
@@ -234,12 +347,47 @@ async function executeTool(
     let bodyOutput: string;
     let title = '';
     let description = '';
+    let extractionMode = 'direct';
 
     if (isHtml) {
       const meta = extractTitleAndDescription(res.text);
       title = meta.title;
       description = meta.description;
-      bodyOutput = htmlToMarkdown(res.text, maxChars);
+      bodyOutput = htmlToMarkdown(res.text, maxChars, res.finalUrl);
+
+      const looksLikeBotChallenge =
+        res.status === 403 ||
+        res.status === 429 ||
+        res.status === 503 ||
+        /just a moment\.\.\.|enable javascript and cookies|cf-browser-challenge|attention required!/i.test(
+          res.text.slice(0, 8000)
+        );
+
+      const policy = getPolicy();
+      const canTryReaderFallback =
+        policy.mode !== 'allowlist' &&
+        (looksLikeBotChallenge || bodyOutput.length < 160);
+
+      if (canTryReaderFallback) {
+        try {
+          const readerUrl = `https://r.jina.ai/${res.finalUrl}`;
+          const readerRes = await guardedFetch(readerUrl, {
+            headers: {
+              Accept: 'text/plain, text/markdown;q=0.9',
+              'X-Return-Format': 'markdown',
+            },
+          });
+          if (readerRes.ok && readerRes.text.trim().length > bodyOutput.length) {
+            bodyOutput =
+              readerRes.text.length > maxChars
+                ? `${readerRes.text.slice(0, maxChars)}\n\n...[Qisqartirildi]`
+                : readerRes.text.trim();
+            extractionMode = 'rendered-fallback';
+          }
+        } catch {
+          // Keep direct extraction if reader fallback is unavailable
+        }
+      }
     } else {
       bodyOutput =
         res.text.length > maxChars
@@ -251,11 +399,14 @@ async function executeTool(
       `URL: ${res.finalUrl}`,
       `HTTP Status: ${res.status}`,
       `Content-Type: ${res.contentType}`,
+      `Extraction: ${extractionMode}`,
       title ? `Sarlavha: ${title}` : '',
       description ? `Tavsif: ${description}` : '',
     ].filter(Boolean);
 
-    let output = `${headerLines.join('\n')}\n\n---\n\n${bodyOutput}`;
+    let output = `${headerLines.join('\n')}\n\n---\n\n${
+      bodyOutput || "(Sahifadan matnli ma'lumot ajratib olinmadi)"
+    }`;
 
     if (includeLinks && isHtml) {
       const links = extractLinksFromHtml(res.text, res.finalUrl, 20);
@@ -265,7 +416,12 @@ async function executeTool(
       }
     }
 
-    return { text: output, bytes: res.bytes, target: url };
+    return {
+      content: [{ type: 'text', text: output }],
+      bytes: res.bytes,
+      target: url,
+      summaryText: output,
+    };
   }
 
   if (name === 'web_search') {
@@ -314,10 +470,12 @@ async function executeTool(
     }
 
     if (results.length === 0) {
+      const msg = `"${query}" so'rovi bo'yicha natija topilmadi.`;
       return {
-        text: `"${query}" so'rovi bo'yicha natija topilmadi.`,
+        content: [{ type: 'text', text: msg }],
         bytes,
         target: query,
+        summaryText: msg,
       };
     }
 
@@ -330,10 +488,12 @@ async function executeTool(
       )
       .join('\n\n');
 
+    const msg = `Qidiruv: "${query}" (${results.length} ta natija)\n\n${formatted}`;
     return {
-      text: `Qidiruv: "${query}" (${results.length} ta natija)\n\n${formatted}`,
+      content: [{ type: 'text', text: msg }],
       bytes,
       target: query,
+      summaryText: msg,
     };
   }
 
@@ -370,7 +530,12 @@ async function executeTool(
       formattedBody,
     ].join('\n');
 
-    return { text: output, bytes: res.bytes, target: `${method} ${url}` };
+    return {
+      content: [{ type: 'text', text: output }],
+      bytes: res.bytes,
+      target: `${method} ${url}`,
+      summaryText: output,
+    };
   }
 
   if (name === 'extract_links') {
@@ -399,7 +564,12 @@ async function executeTool(
             )
             .join('\n');
 
-    return { text, bytes: res.bytes, target: url };
+    return {
+      content: [{ type: 'text', text }],
+      bytes: res.bytes,
+      target: url,
+      summaryText: text,
+    };
   }
 
   if (name === 'check_url_health') {
@@ -426,10 +596,98 @@ async function executeTool(
       latencyMs: latency,
     };
 
+    const jsonText = JSON.stringify(payload, null, 2);
     return {
-      text: JSON.stringify(payload, null, 2),
+      content: [{ type: 'text', text: jsonText }],
       bytes: res.bytes,
       target: url,
+      summaryText: jsonText,
+    };
+  }
+
+  if (name === 'download_file') {
+    const url = String(args.url || '').trim();
+    const encoding = String(args.encoding || 'auto');
+    const includeBase64 = Boolean(args.include_base64);
+
+    const res = await guardedBinaryFetch(url, MAX_DOWNLOAD_FILE_BYTES);
+    if (!res.ok) {
+      throw new Error(`Faylni yuklab olishda HTTP xato: ${res.status} (${res.finalUrl})`);
+    }
+
+    const filename = extractFilename(res.finalUrl, res.contentDisposition, res.contentType);
+    const mimeType = res.contentType.split(';')[0].trim() || 'application/octet-stream';
+    const sha256 = crypto.createHash('sha256').update(res.buffer).digest('hex');
+
+    const stored = saveDownloadedFile({
+      filename,
+      contentType: mimeType,
+      sizeBytes: res.buffer.byteLength,
+      sha256,
+      buffer: res.buffer,
+      sourceUrl: res.finalUrl,
+    });
+
+    const downloadPath = `/api/downloads/${stored.id}/${encodeURIComponent(filename)}`;
+    const kind = classifyContentType(mimeType);
+
+    const metaLines = [
+      `Fayl muvaffaqiyatli yuklab olindi`,
+      `Fayl nomi: ${filename}`,
+      `Manba URL: ${res.finalUrl}`,
+      `Content-Type: ${mimeType}`,
+      `Hajmi: ${res.buffer.byteLength} bayt (${(res.buffer.byteLength / 1024).toFixed(1)} KB)`,
+      `SHA-256: ${sha256}`,
+      `Server yuklash havolasi: ${downloadPath}`,
+    ];
+
+    const content: McpContentItem[] = [];
+
+    if (kind === 'image' && encoding !== 'utf8' && res.buffer.byteLength <= 3_000_000) {
+      content.push({ type: 'text', text: metaLines.join('\n') });
+      content.push({
+        type: 'image',
+        data: res.buffer.toString('base64'),
+        mimeType,
+      });
+    } else if (kind === 'text' && encoding !== 'base64') {
+      const textBody = res.buffer.toString('utf8');
+      const maxInline = 60_000;
+      const truncated =
+        textBody.length > maxInline
+          ? `${textBody.slice(0, maxInline)}\n\n...[Qisqartirildi: jami ${textBody.length} belgi]`
+          : textBody;
+      content.push({
+        type: 'text',
+        text: `${metaLines.join('\n')}\n\n---\n\n${truncated}`,
+      });
+    } else if (res.buffer.byteLength <= 1_000_000 || includeBase64) {
+      content.push({
+        type: 'text',
+        text: `${metaLines.join('\n')}\n\n(Binar fayl Base64 EmbeddedResource ko'rinishida ilova qilindi)`,
+      });
+      content.push({
+        type: 'resource',
+        resource: {
+          uri: res.finalUrl,
+          mimeType,
+          blob: res.buffer.toString('base64'),
+        },
+      });
+    } else {
+      content.push({
+        type: 'text',
+        text: `${metaLines.join(
+          '\n'
+        )}\n\nEslatma: Fayl 1 MB dan katta bo'lgani uchun kontekstni to'ldirmaslik maqsadida server keshida saqlandi (${downloadPath}). Agar Base64 kerak bo'lsa, include_base64: true bilan chaqiring.`,
+      });
+    }
+
+    return {
+      content,
+      bytes: res.buffer.byteLength,
+      target: url,
+      summaryText: `${filename} (${(res.buffer.byteLength / 1024).toFixed(1)} KB)`,
     };
   }
 
@@ -522,16 +780,11 @@ export async function handleMcpJsonRpc(
         status: 'ok',
         durationMs,
         bytes: outcome.bytes,
-        summary: outcome.text.slice(0, 120).replace(/\s+/g, ' '),
+        summary: outcome.summaryText.slice(0, 120).replace(/\s+/g, ' '),
       });
 
       return buildJsonRpcSuccess(id, {
-        content: [
-          {
-            type: 'text',
-            text: outcome.text,
-          },
-        ],
+        content: outcome.content,
       });
     } catch (err) {
       const durationMs = Date.now() - start;
