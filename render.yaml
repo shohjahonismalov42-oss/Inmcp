@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: mcp-web-bridge
+    runtime: node
+    plan: free
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: NODE_ENV=production node dist/server.mjs
+    healthCheckPath: /mcp
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: MCP_BLOCK_PRIVATE_NETS
+        value: "true"

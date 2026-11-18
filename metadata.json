@@ -1,0 +1,6 @@
+{
+  "name": "MCP Web Bridge — Claude Sandbox Internet Gateway",
+  "description": "Claude AI uchun sandbox muhitida internetdan xavfsiz foydalanish imkonini beruvchi Model Context Protocol (MCP) serveri va boshqaruv paneli.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
