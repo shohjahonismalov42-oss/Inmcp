@@ -17,8 +17,57 @@ export interface ProviderModels {
 export const DEFAULT_PROVIDER_MODELS: ProviderModels = {
   groq: 'llama-3.1-8b-instant',
   gemini: 'gemini-4-hydrogen',
-  openrouter: 'anthropic/claude-sonnet-4',
+  openrouter: 'anthropic/claude-sonnet-4.6',
 };
+
+export const GROQ_FALLBACK_MODELS = [
+  'llama-3.1-8b-instant',
+  'llama-3.3-70b-versatile',
+  'openai/gpt-oss-20b',
+];
+
+export const GEMINI_TEXT_FALLBACK_MODELS = [
+  'gemini-4-hydrogen',
+  'gemini-3.1-flash-lite',
+];
+
+export const OPENROUTER_FALLBACK_MODELS = [
+  'anthropic/claude-sonnet-4.6',
+  'anthropic/claude-sonnet-5',
+  'anthropic/claude-sonnet-4.5',
+  'deepseek/deepseek-r1-0528',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'google/gemma-4-31b-it:free',
+];
+
+export function sanitizeApiKey(raw?: string | null): string {
+  if (!raw) return '';
+  let cleaned = raw.trim();
+  if (
+    (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+    (cleaned.startsWith("'") && cleaned.endsWith("'"))
+  ) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  if (/^bearer\s+/i.test(cleaned)) {
+    cleaned = cleaned.replace(/^bearer\s+/i, '').trim();
+  }
+  return cleaned;
+}
+
+export function validateKeyFormatHint(provider: AiProvider, key: string): string | null {
+  if (!key) return null;
+  if (provider === 'groq' && !key.startsWith('gsk_')) {
+    return "GROQ_API_KEY odatda 'gsk_' bilan boshlanadi (console.groq.com/keys).";
+  }
+  if (provider === 'openrouter' && !key.startsWith('sk-or-')) {
+    return "OPENROUTER_API_KEY odatda 'sk-or-' bilan boshlanadi (openrouter.ai/keys).";
+  }
+  if (provider === 'gemini' && key === 'MY_GEMINI_API_KEY') {
+    return 'GEMINI_API_KEY hali haqiqiy kalit bilan almashtirilmagan.';
+  }
+  return null;
+}
 
 const HARD_KEYWORDS = [
   'architecture',

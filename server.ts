@@ -32,7 +32,11 @@ import {
   queryRecords,
   upsertKv,
 } from './src/server/mcpDatabase';
-import { getProviderReadiness, runMultiAiTask } from './src/server/multiAiExecutor';
+import {
+  getProviderReadiness,
+  runMultiAiTask,
+  verifyAllProviders,
+} from './src/server/multiAiExecutor';
 
 dotenv.config();
 
@@ -266,6 +270,15 @@ async function startServer() {
       providers: getProviderReadiness(),
       runs: listAiRuns(30),
     });
+  });
+
+  app.post('/api/ai/verify', async (_req: Request, res: Response) => {
+    try {
+      const checks = await verifyAllProviders();
+      res.json({ checks });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   app.post('/api/ai/delegate', async (req: Request, res: Response) => {

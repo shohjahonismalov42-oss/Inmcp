@@ -11,6 +11,8 @@ import {
   Cpu,
   CheckCircle2,
   CircleDashed,
+  RefreshCw,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   ClientConfigType,
@@ -22,8 +24,17 @@ import { SandboxPolicy } from '../lib/mcpPolicy';
 
 export type ProviderReadinessMap = Record<
   'groq' | 'gemini' | 'openrouter',
-  { configured: boolean; defaultModel: string }
+  { configured: boolean; defaultModel: string; keyWarning?: string }
 >;
+
+interface ProviderLiveCheck {
+  provider: 'groq' | 'gemini' | 'openrouter';
+  configured: boolean;
+  ok: boolean;
+  model: string;
+  durationMs: number;
+  message: string;
+}
 
 interface SetupConfigViewProps {
   originUrl: string;
@@ -51,6 +62,10 @@ export function SetupConfigView({
   const [showScriptPreview, setShowScriptPreview] = useState(false);
   const [tokenInput, setTokenInput] = useState(policy.bearerToken || 'mcp_sandbox_dev_token');
   const [savingAuth, setSavingAuth] = useState(false);
+  const [verifyingAi, setVerifyingAi] = useState(false);
+  const [liveChecks, setLiveChecks] = useState<
+    Record<string, ProviderLiveCheck> | null
+  >(null);
 
   const endpointUrl = `${originUrl}/mcp`;
   const sseUrl = `${originUrl}/sse`;
@@ -93,6 +108,23 @@ export function SetupConfigView({
       await onUpdateAuth(policy.requireBearerAuth, tokenInput);
     } finally {
       setSavingAuth(false);
+    }
+  }
+
+  async function handleVerifyProviders() {
+    setVerifyingAi(true);
+    try {
+      const res = await fetch('/api/ai/verify', { method: 'POST' });
+      const json = await res.json();
+      if (Array.isArray(json.checks)) {
+        const map: Record<string, ProviderLiveCheck> = {};
+        for (const item of json.checks as ProviderLiveCheck[]) {
+          map[item.provider] = item;
+        }
+        setLiveChecks(map);
+      }
+    } finally {
+      setVerifyingAi(false);
     }
   }
 
@@ -304,14 +336,30 @@ export function SetupConfigView({
 
       {/* Multi-AI & Audio & SQLite Server Readiness (Read-only, env-based) */}
       <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
-        <div>
-          <h2 className="font-display text-base font-semibold text-slate-900">
-            Multi-AI Marshrutlash, Gemini TTS/STT va SQLite Baza Holati
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            API kalitlari xavfsizlik uchun faqat server muhit o&apos;zgaruvchilari (Render Environment /
-            Secrets) orqali o&apos;qiladi.
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 className="font-display text-base font-semibold text-slate-900">
+              Multi-AI Marshrutlash, Gemini TTS/STT va SQLite Baza Holati
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              API kalitlari faqat server muhit o&apos;zgaruvchilari (Render Environment / Secrets)
+              orqali o&apos;qiladi; OpenRouter va Gemini zaxira modellari avtomatik qo&apos;llanadi.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleVerifyProviders}
+            disabled={verifyingAi}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60 whitespace-nowrap shrink-0 self-start"
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${verifyingAi ? 'animate-spin' : ''}`}
+              aria-hidden="true"
+            />
+            <span>
+              {verifyingAi ? 'Tekshirilmoqda...' : 'Provayderlarni jonli tekshirish'}
+            </span>
+          </button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -320,7 +368,19 @@ export function SetupConfigView({
               <span className="text-xs font-semibold text-slate-900 whitespace-nowrap">
                 Groq · Oson
               </span>
-              {providerReadiness?.groq.configured ? (
+              {liveChecks?.groq ? (
+                liveChecks.groq.ok ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 whitespace-nowrap shrink-0">
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span className="tabular-nums">{liveChecks.groq.durationMs} ms</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700 whitespace-nowrap shrink-0">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span>Xato</span>
+                  </span>
+                )
+              ) : providerReadiness?.groq.configured ? (
                 <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 whitespace-nowrap shrink-0">
                   <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   <span>Tayyor</span>
@@ -333,9 +393,18 @@ export function SetupConfigView({
               )}
             </div>
             <p className="font-mono text-xs text-slate-600 truncate">
-              {providerReadiness?.groq.defaultModel || 'llama-3.1-8b-instant'}
+              {liveChecks?.groq?.ok
+                ? liveChecks.groq.model
+                : providerReadiness?.groq.defaultModel || 'llama-3.1-8b-instant'}
             </p>
             <p className="font-mono text-xs text-slate-400">GROQ_API_KEY</p>
+            {(liveChecks?.groq && !liveChecks.groq.ok) || providerReadiness?.groq.keyWarning ? (
+              <p className="text-xs text-red-700 leading-snug pt-1">
+                {liveChecks?.groq && !liveChecks.groq.ok
+                  ? liveChecks.groq.message
+                  : providerReadiness?.groq.keyWarning}
+              </p>
+            ) : null}
           </div>
 
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-1.5">
@@ -343,7 +412,19 @@ export function SetupConfigView({
               <span className="text-xs font-semibold text-slate-900 whitespace-nowrap">
                 Gemini · O&apos;rtacha
               </span>
-              {providerReadiness?.gemini.configured ? (
+              {liveChecks?.gemini ? (
+                liveChecks.gemini.ok ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 whitespace-nowrap shrink-0">
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span className="tabular-nums">{liveChecks.gemini.durationMs} ms</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700 whitespace-nowrap shrink-0">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span>Xato</span>
+                  </span>
+                )
+              ) : providerReadiness?.gemini.configured ? (
                 <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 whitespace-nowrap shrink-0">
                   <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   <span>Tayyor</span>
@@ -356,9 +437,18 @@ export function SetupConfigView({
               )}
             </div>
             <p className="font-mono text-xs text-slate-600 truncate">
-              {providerReadiness?.gemini.defaultModel || 'gemini-4-hydrogen'} · TTS/STT
+              {liveChecks?.gemini?.ok
+                ? `${liveChecks.gemini.model} · TTS/STT`
+                : `${providerReadiness?.gemini.defaultModel || 'gemini-4-hydrogen'} · TTS/STT`}
             </p>
             <p className="font-mono text-xs text-slate-400">GEMINI_API_KEY</p>
+            {(liveChecks?.gemini && !liveChecks.gemini.ok) || providerReadiness?.gemini.keyWarning ? (
+              <p className="text-xs text-red-700 leading-snug pt-1">
+                {liveChecks?.gemini && !liveChecks.gemini.ok
+                  ? liveChecks.gemini.message
+                  : providerReadiness?.gemini.keyWarning}
+              </p>
+            ) : null}
           </div>
 
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-1.5">
@@ -366,7 +456,19 @@ export function SetupConfigView({
               <span className="text-xs font-semibold text-slate-900 whitespace-nowrap">
                 OpenRouter · Qiyin
               </span>
-              {providerReadiness?.openrouter.configured ? (
+              {liveChecks?.openrouter ? (
+                liveChecks.openrouter.ok ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 whitespace-nowrap shrink-0">
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span className="tabular-nums">{liveChecks.openrouter.durationMs} ms</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700 whitespace-nowrap shrink-0">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span>Xato</span>
+                  </span>
+                )
+              ) : providerReadiness?.openrouter.configured ? (
                 <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 whitespace-nowrap shrink-0">
                   <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   <span>Tayyor</span>
@@ -379,9 +481,19 @@ export function SetupConfigView({
               )}
             </div>
             <p className="font-mono text-xs text-slate-600 truncate">
-              {providerReadiness?.openrouter.defaultModel || 'anthropic/claude-sonnet-4'}
+              {liveChecks?.openrouter?.ok
+                ? liveChecks.openrouter.model
+                : providerReadiness?.openrouter.defaultModel || 'anthropic/claude-sonnet-4.6'}
             </p>
             <p className="font-mono text-xs text-slate-400">OPENROUTER_API_KEY</p>
+            {(liveChecks?.openrouter && !liveChecks.openrouter.ok) ||
+            providerReadiness?.openrouter.keyWarning ? (
+              <p className="text-xs text-red-700 leading-snug pt-1">
+                {liveChecks?.openrouter && !liveChecks.openrouter.ok
+                  ? liveChecks.openrouter.message
+                  : providerReadiness?.openrouter.keyWarning}
+              </p>
+            ) : null}
           </div>
 
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-1.5">
@@ -403,9 +515,9 @@ export function SetupConfigView({
       </section>
 
       {/* Client Configuration Generator */}
-      <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
+      <section className="bg-white border border-slate-200 rounded-xl p-4 sm:p-6 space-y-4 min-w-0">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 min-w-0">
+          <div className="min-w-0">
             <h2 className="font-display text-base font-semibold text-slate-900">
               Claude Klient Konfiguratsiyasi
             </h2>
@@ -415,7 +527,7 @@ export function SetupConfigView({
           <div
             role="tablist"
             aria-label="Klient turini tanlash"
-            className="inline-flex items-center gap-1 rounded-lg bg-slate-100 p-1 self-start"
+            className="inline-flex items-center gap-1 rounded-lg bg-slate-100 p-1 self-start max-w-full overflow-x-auto"
           >
             {CLIENT_TABS.map((tab) => (
               <button
@@ -436,9 +548,9 @@ export function SetupConfigView({
           </div>
         </div>
 
-        <div className="rounded-lg bg-slate-900 text-slate-100 overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800">
-            <span className="font-mono text-xs text-slate-300">{generated.filename}</span>
+        <div className="rounded-lg bg-slate-900 text-slate-100 overflow-hidden max-w-full">
+          <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-slate-800">
+            <span className="font-mono text-xs text-slate-300 truncate">{generated.filename}</span>
             <button
               type="button"
               onClick={() => copyText('config', generated.content)}
@@ -457,7 +569,7 @@ export function SetupConfigView({
               )}
             </button>
           </div>
-          <pre className="p-4 overflow-x-auto font-mono text-xs leading-relaxed text-slate-100">
+          <pre className="p-4 overflow-x-auto font-mono text-xs leading-relaxed text-slate-100 max-w-full">
             <code>{generated.content}</code>
           </pre>
         </div>
