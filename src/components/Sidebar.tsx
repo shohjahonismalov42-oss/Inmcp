@@ -3,11 +3,12 @@ import {
   Play,
   ShieldCheck,
   ScrollText,
+  Database,
   X,
   Globe,
 } from 'lucide-react';
 
-export type NavTab = 'setup' | 'playground' | 'policy' | 'logs';
+export type NavTab = 'setup' | 'playground' | 'database' | 'policy' | 'logs';
 
 interface SidebarProps {
   activeTab: NavTab;
@@ -35,6 +36,12 @@ const NAV_ITEMS: Array<{
     label: 'Jonli Sinov',
     description: 'MCP vositalarini tekshirish',
     icon: Play,
+  },
+  {
+    id: 'database',
+    label: "Ma'lumotlar Bazasi",
+    description: 'SQLite va Multi-AI tarixi',
+    icon: Database,
   },
   {
     id: 'policy',

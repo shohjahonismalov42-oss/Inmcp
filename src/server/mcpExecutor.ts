@@ -23,6 +23,19 @@ import {
   buildJsonRpcError,
   buildJsonRpcSuccess,
 } from '../lib/mcpProtocol';
+import { GeminiVoiceName, generateSpeechWav, transcribeAudio } from './geminiAudio';
+import {
+  deleteKv,
+  deleteRecord,
+  getKv,
+  insertRecord,
+  listKv,
+  queryRecords,
+  runReadOnlySql,
+  upsertKv,
+} from './mcpDatabase';
+import { runMultiAiTask } from './multiAiExecutor';
+import { AiProvider, TaskDifficulty } from '../lib/aiRouter';
 
 export interface AuditLogEntry {
   id: string;
@@ -691,6 +704,291 @@ async function executeTool(
     };
   }
 
+  if (name === 'tts_generate') {
+    const text = String(args.text || '').trim();
+    const rawVoice = String(args.voice_name || 'Kore');
+    const allowedVoices: GeminiVoiceName[] = ['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'];
+    const voiceName: GeminiVoiceName = allowedVoices.includes(rawVoice as GeminiVoiceName)
+      ? (rawVoice as GeminiVoiceName)
+      : 'Kore';
+    const style = typeof args.style === 'string' ? args.style : undefined;
+    const expressive = Boolean(args.expressive);
+
+    const speech = await generateSpeechWav({
+      text,
+      voiceName,
+      style,
+      expressive,
+    });
+
+    const sha256 = crypto.createHash('sha256').update(speech.buffer).digest('hex');
+    const filename = `speech-${Date.now()}.wav`;
+    const stored = saveDownloadedFile({
+      filename,
+      contentType: 'audio/wav',
+      sizeBytes: speech.buffer.byteLength,
+      sha256,
+      buffer: speech.buffer,
+      sourceUrl: `gemini://${speech.model}`,
+    });
+
+    const downloadPath = `/api/downloads/${stored.id}/${encodeURIComponent(filename)}`;
+    const infoText = [
+      `Gemini TTS audio muvaffaqiyatli yaratildi`,
+      `Model: ${speech.model}`,
+      `Ovoz: ${speech.voiceName}`,
+      `Format: audio/wav (24kHz mono 16-bit)`,
+      `Hajmi: ${speech.buffer.byteLength} bayt (${(speech.buffer.byteLength / 1024).toFixed(1)} KB)`,
+      `Server yuklash havolasi: ${downloadPath}`,
+    ].join('\n');
+
+    return {
+      content: [
+        { type: 'text', text: infoText },
+        {
+          type: 'resource',
+          resource: {
+            uri: downloadPath,
+            mimeType: 'audio/wav',
+            blob: speech.buffer.toString('base64'),
+          },
+        },
+      ],
+      bytes: speech.buffer.byteLength,
+      target: `TTS (${speech.voiceName}, ${speech.model})`,
+      summaryText: `${filename} (${speech.voiceName}, ${(speech.buffer.byteLength / 1024).toFixed(1)} KB)`,
+    };
+  }
+
+  if (name === 'stt_transcribe') {
+    const audioUrl = String(args.audio_url || '').trim();
+    const rawBase64 = String(args.audio_base64 || '').trim();
+    const prompt = typeof args.prompt === 'string' ? args.prompt : undefined;
+    let base64Audio = '';
+    let mimeType = String(args.mime_type || '').trim();
+    let byteSize = 0;
+    let targetLabel = 'Base64 audio';
+
+    if (audioUrl) {
+      const fetched = await guardedBinaryFetch(audioUrl, MAX_DOWNLOAD_FILE_BYTES);
+      if (!fetched.ok) {
+        throw new Error(`Audio faylni yuklashda HTTP xato: ${fetched.status}`);
+      }
+      base64Audio = fetched.buffer.toString('base64');
+      byteSize = fetched.buffer.byteLength;
+      targetLabel = fetched.finalUrl;
+      if (!mimeType) {
+        const ct = fetched.contentType.split(';')[0].trim();
+        if (ct.startsWith('audio/')) {
+          mimeType = ct;
+        } else if (audioUrl.toLowerCase().endsWith('.mp3')) {
+          mimeType = 'audio/mpeg';
+        } else if (audioUrl.toLowerCase().endsWith('.ogg')) {
+          mimeType = 'audio/ogg';
+        } else if (audioUrl.toLowerCase().endsWith('.m4a')) {
+          mimeType = 'audio/mp4';
+        } else if (audioUrl.toLowerCase().endsWith('.webm')) {
+          mimeType = 'audio/webm';
+        } else {
+          mimeType = 'audio/wav';
+        }
+      }
+    } else if (rawBase64) {
+      const dataUrlMatch = rawBase64.match(/^data:([^;]+);base64,(.+)$/);
+      if (dataUrlMatch) {
+        if (!mimeType) mimeType = dataUrlMatch[1];
+        base64Audio = dataUrlMatch[2];
+      } else {
+        base64Audio = rawBase64;
+      }
+      byteSize = Buffer.byteLength(base64Audio, 'base64');
+      if (!mimeType) mimeType = 'audio/wav';
+    } else {
+      throw new Error("stt_transcribe uchun `audio_url` yoki `audio_base64` berilishi kerak.");
+    }
+
+    const res = await transcribeAudio({
+      base64Audio,
+      mimeType,
+      prompt,
+    });
+
+    const outText = [
+      `Model: ${res.model}`,
+      `Audio MIME: ${mimeType}`,
+      '',
+      '--- Transkripsiya ---',
+      res.transcript,
+    ].join('\n');
+
+    return {
+      content: [{ type: 'text', text: outText }],
+      bytes: byteSize,
+      target: targetLabel,
+      summaryText: res.transcript.slice(0, 120),
+    };
+  }
+
+  if (name === 'db_save') {
+    const key = typeof args.key === 'string' ? args.key.trim() : '';
+    const namespace = typeof args.namespace === 'string' ? args.namespace.trim() : 'default';
+
+    if (key) {
+      const saved = upsertKv(namespace, key, args.value ?? args.data ?? '');
+      const text = JSON.stringify({ savedType: 'kv', item: saved }, null, 2);
+      return {
+        content: [{ type: 'text', text }],
+        bytes: Buffer.byteLength(text, 'utf8'),
+        target: `kv:${saved.namespace}/${saved.key}`,
+        summaryText: `KV saqlandi: ${saved.namespace}/${saved.key}`,
+      };
+    }
+
+    if (args.data !== undefined || args.title !== undefined || args.collection !== undefined) {
+      const collection = typeof args.collection === 'string' ? args.collection : 'notes';
+      const title = typeof args.title === 'string' ? args.title : '';
+      const tags = typeof args.tags === 'string' ? args.tags : '';
+      const saved = insertRecord(collection, title, args.data ?? '', tags);
+      const text = JSON.stringify({ savedType: 'record', item: saved }, null, 2);
+      return {
+        content: [{ type: 'text', text }],
+        bytes: Buffer.byteLength(text, 'utf8'),
+        target: `record:${saved.collection}#${saved.id}`,
+        summaryText: `Yozuv #${saved.id} (${saved.collection}) saqlandi`,
+      };
+    }
+
+    throw new Error("db_save uchun `key` + `value` yoki `collection` + `data` kiriting.");
+  }
+
+  if (name === 'db_get') {
+    const key = typeof args.key === 'string' ? args.key.trim() : '';
+    const namespace = typeof args.namespace === 'string' ? args.namespace.trim() : '';
+    const collection = typeof args.collection === 'string' ? args.collection.trim() : '';
+    const search = typeof args.search === 'string' ? args.search.trim() : '';
+    const limit = Number(args.limit) || 25;
+
+    let payload: unknown;
+    let targetLabel = 'sqlite';
+
+    if (key) {
+      const item = getKv(namespace || 'default', key);
+      payload = { mode: 'kv_single', found: Boolean(item), item };
+      targetLabel = `kv:${namespace || 'default'}/${key}`;
+    } else if (collection) {
+      const records = queryRecords(collection, search || undefined, limit);
+      payload = { mode: 'collection', collection, count: records.length, records };
+      targetLabel = `collection:${collection}`;
+    } else if (namespace) {
+      const items = listKv(namespace, search || undefined, limit);
+      payload = { mode: 'kv_list', namespace, count: items.length, items };
+      targetLabel = `kv:${namespace}/*`;
+    } else {
+      const kv = listKv(undefined, search || undefined, limit);
+      const records = queryRecords(undefined, search || undefined, limit);
+      payload = {
+        mode: 'all',
+        kvCount: kv.length,
+        recordCount: records.length,
+        kv,
+        records,
+      };
+    }
+
+    const text = JSON.stringify(payload, null, 2);
+    return {
+      content: [{ type: 'text', text }],
+      bytes: Buffer.byteLength(text, 'utf8'),
+      target: targetLabel,
+      summaryText: text.slice(0, 120),
+    };
+  }
+
+  if (name === 'db_delete') {
+    const recordId = args.record_id !== undefined && args.record_id !== '' ? Number(args.record_id) : NaN;
+    const key = typeof args.key === 'string' ? args.key.trim() : '';
+    const namespace = typeof args.namespace === 'string' ? args.namespace.trim() : 'default';
+
+    if (Number.isInteger(recordId) && recordId > 0) {
+      const deleted = deleteRecord(recordId);
+      const text = JSON.stringify({ deletedType: 'record', id: recordId, deleted }, null, 2);
+      return {
+        content: [{ type: 'text', text }],
+        bytes: Buffer.byteLength(text, 'utf8'),
+        target: `record#${recordId}`,
+        summaryText: `Yozuv #${recordId} o'chirildi (${deleted})`,
+      };
+    }
+
+    if (key) {
+      const deleted = deleteKv(namespace, key);
+      const text = JSON.stringify({ deletedType: 'kv', namespace, key, deleted }, null, 2);
+      return {
+        content: [{ type: 'text', text }],
+        bytes: Buffer.byteLength(text, 'utf8'),
+        target: `kv:${namespace}/${key}`,
+        summaryText: `KV ${namespace}/${key} o'chirildi (${deleted})`,
+      };
+    }
+
+    throw new Error("db_delete uchun `record_id` yoki `key` ko'rsatilishi kerak.");
+  }
+
+  if (name === 'db_sql') {
+    const sql = String(args.sql || '').trim();
+    const rows = runReadOnlySql(sql);
+    const text = JSON.stringify({ rowCount: rows.length, rows }, null, 2);
+    return {
+      content: [{ type: 'text', text }],
+      bytes: Buffer.byteLength(text, 'utf8'),
+      target: sql.slice(0, 80),
+      summaryText: `${rows.length} ta qator qaytarildi`,
+    };
+  }
+
+  if (name === 'ai_delegate') {
+    const task = String(args.task || '').trim();
+    const difficulty =
+      typeof args.difficulty === 'string'
+        ? (args.difficulty as 'auto' | TaskDifficulty)
+        : 'auto';
+    const provider =
+      typeof args.provider === 'string'
+        ? (args.provider as 'auto' | AiProvider)
+        : 'auto';
+    const context = typeof args.context === 'string' ? args.context : undefined;
+    const systemInstruction =
+      typeof args.system_instruction === 'string' ? args.system_instruction : undefined;
+    const jsonMode = Boolean(args.json_mode);
+
+    const res = await runMultiAiTask({
+      task,
+      difficulty,
+      provider,
+      context,
+      systemInstruction,
+      jsonMode,
+    });
+
+    const outText = [
+      `Provayder: ${res.provider.toUpperCase()}`,
+      `Model: ${res.model}`,
+      `Daraja: ${res.difficulty}`,
+      `Marshrutlash sababi: ${res.reason}`,
+      `Davomiylik: ${res.durationMs} ms`,
+      '',
+      '--- Javob ---',
+      res.output,
+    ].join('\n');
+
+    return {
+      content: [{ type: 'text', text: outText }],
+      bytes: Buffer.byteLength(res.output, 'utf8'),
+      target: `${res.provider}/${res.model} (${res.difficulty})`,
+      summaryText: `${res.provider} (${res.difficulty}): ${res.output.slice(0, 90)}`,
+    };
+  }
+
   throw new Error(`Noma'lum MCP vositasi: ${name}`);
 }
 
@@ -729,7 +1027,7 @@ export async function handleMcpJsonRpc(
         version: MCP_SERVER_VERSION,
       },
       instructions:
-        "Ushbu MCP serveri Claude AI uchun sandbox muhitidan internetga (qidiruv, veb-sahifa o'qish, REST API) xavfsiz kirish imkonini beradi.",
+        "Ushbu MCP serveri Claude AI uchun sandbox muhitidan internetga kirish (qidiruv, veb-sahifa o'qish, REST API, fayl yuklash), Gemini API orqali ovoz yaratish (tts_generate) va transkripsiya (stt_transcribe), doimiy SQLite bazadan foydalanish (db_save, db_get, db_delete, db_sql), hamda vazifalarni murakkablik bo'yicha Groq (easy), Gemini (medium), OpenRouter (hard) modellariga taqsimlash (ai_delegate) imkonini beradi.",
     };
     recordAudit({
       rpcMethod: 'initialize',
@@ -790,7 +1088,9 @@ export async function handleMcpJsonRpc(
       const durationMs = Date.now() - start;
       const isBlocked = err instanceof PolicyBlockedError;
       const msg = err instanceof Error ? err.message : String(err);
-      const target = String(toolArgs.url || toolArgs.query || toolName);
+      const target = String(
+        toolArgs.url || toolArgs.audio_url || toolArgs.query || toolArgs.key || toolArgs.collection || toolName
+      );
 
       recordAudit({
         rpcMethod: 'tools/call',

@@ -3,14 +3,16 @@ import { Menu, Activity, CheckCircle2, AlertCircle } from 'lucide-react';
 import { DEFAULT_POLICY, SandboxPolicy } from './lib/mcpPolicy';
 import { AuditLogEntry } from './server/mcpExecutor';
 import { NavTab, Sidebar } from './components/Sidebar';
-import { SetupConfigView } from './components/SetupConfigView';
+import { ProviderReadinessMap, SetupConfigView } from './components/SetupConfigView';
 import { PlaygroundView } from './components/PlaygroundView';
+import { DatabaseView } from './components/DatabaseView';
 import { PolicyView } from './components/PolicyView';
 import { AuditLogView } from './components/AuditLogView';
 
 const TAB_TITLES: Record<NavTab, string> = {
   setup: 'Ulanish va Sozlash',
   playground: 'Jonli Sinov',
+  database: "Ma'lumotlar Bazasi",
   policy: 'Xavfsizlik Siyosati',
   logs: "So'rovlar Jurnali",
 };
@@ -23,6 +25,9 @@ export default function App() {
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [pingStatus, setPingStatus] = useState<'idle' | 'checking' | 'ok' | 'error'>('idle');
   const [pingMessage, setPingMessage] = useState<string>('');
+  const [providerReadiness, setProviderReadiness] = useState<ProviderReadinessMap | undefined>(
+    undefined
+  );
 
   const originUrl =
     typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
@@ -30,9 +35,10 @@ export default function App() {
   const fetchState = useCallback(async () => {
     setLoadingLogs(true);
     try {
-      const [statusRes, logsRes] = await Promise.all([
+      const [statusRes, logsRes, aiRes] = await Promise.all([
         fetch('/api/status'),
         fetch('/api/logs'),
+        fetch('/api/ai/status'),
       ]);
       if (statusRes.ok) {
         const statusJson = await statusRes.json();
@@ -41,6 +47,10 @@ export default function App() {
       if (logsRes.ok) {
         const logsJson = await logsRes.json();
         if (Array.isArray(logsJson.logs)) setLogs(logsJson.logs);
+      }
+      if (aiRes.ok) {
+        const aiJson = await aiRes.json();
+        if (aiJson.providers) setProviderReadiness(aiJson.providers);
       }
     } finally {
       setLoadingLogs(false);
@@ -190,6 +200,7 @@ export default function App() {
             <SetupConfigView
               originUrl={originUrl}
               policy={policy}
+              providerReadiness={providerReadiness}
               onUpdateAuth={handleUpdateAuth}
               onGoToPlayground={() => setActiveTab('playground')}
             />
@@ -198,6 +209,8 @@ export default function App() {
           {activeTab === 'playground' && (
             <PlaygroundView policy={policy} onToolExecuted={fetchState} />
           )}
+
+          {activeTab === 'database' && <DatabaseView />}
 
           {activeTab === 'policy' && (
             <PolicyView policy={policy} onSavePolicy={handleSavePolicy} />

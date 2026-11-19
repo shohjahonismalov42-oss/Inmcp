@@ -158,6 +158,212 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       required: ['url'],
     },
   },
+  {
+    name: 'tts_generate',
+    title: 'Ovoz yaratish (Gemini TTS)',
+    description:
+      "Matnni Gemini TTS (gemini-3.8-flash-lite-tts / gemini-3.8-flash-tts) orqali sifatli WAV ovoz fayliga aylantiradi va audio resurs hamda yuklash havolasini qaytaradi.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'Ovozga aylantiriladigan matn.',
+        },
+        voice_name: {
+          type: 'string',
+          enum: ['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'],
+          description: 'Ovoz tembri (standart Kore).',
+        },
+        style: {
+          type: 'string',
+          description: "Ixtiyoriy ohang ko'rsatmasi (masalan: Clear, warm narrator).",
+        },
+        expressive: {
+          type: 'boolean',
+          description: 'True bo‘lsa gemini-3.8-flash-tts (Voice Design / podcast uslubi) ishlatiladi.',
+        },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'stt_transcribe',
+    title: 'Ovozdan matnga (Gemini STT)',
+    description:
+      'Audio faylni (URL orqali yoki Base64) Gemini STT (gemini-3.5-transcribe) yordamida aniq matnga o‘giradi.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        audio_url: {
+          type: 'string',
+          description: 'Transkripsiya qilinadigan audio fayl URL manzili (mp3, wav, ogg, webm, m4a).',
+        },
+        audio_base64: {
+          type: 'string',
+          description: 'Agar URL o‘rniga bevosita audio Base64 berilsa.',
+        },
+        mime_type: {
+          type: 'string',
+          description: 'Audio MIME turi (masalan: audio/wav, audio/mp3, audio/webm).',
+        },
+        prompt: {
+          type: 'string',
+          description: 'Ixtiyoriy ko‘rsatma (masalan: Transcribe in Uzbek).',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'db_save',
+    title: 'Bazaga saqlash (SQLite)',
+    description:
+      "Shu MCP serverning doimiy SQLite ma'lumotlar bazasiga kalit-qiymat (key+value) yoki kolleksiya yozuvi (collection+title+data) saqlaydi.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        namespace: {
+          type: 'string',
+          description: "Kalit-qiymat bo'limi (standart default).",
+        },
+        key: {
+          type: 'string',
+          description: 'Kalit-qiymat saqlash uchun unikal kalit nomi.',
+        },
+        value: {
+          type: 'string',
+          description: 'Kalitga saqlanadigan matn yoki JSON.',
+        },
+        collection: {
+          type: 'string',
+          description: 'Yozuvlar jadvali/kolleksiyasi (masalan: articles, tasks, research).',
+        },
+        title: {
+          type: 'string',
+          description: 'Kolleksiya yozuvi sarlavhasi.',
+        },
+        data: {
+          type: 'string',
+          description: 'Kolleksiya yozuvining asosiy matni yoki JSON tarkibi.',
+        },
+        tags: {
+          type: 'string',
+          description: 'Vergul bilan ajratilgan teglar.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'db_get',
+    title: 'Bazadan o‘qish (SQLite)',
+    description:
+      "Server SQLite bazasidan kalit bo'yicha qiymat oladi yoki kolleksiyadagi yozuvlarni qidiradi.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        namespace: {
+          type: 'string',
+          description: 'Kalit-qiymat bo‘limi.',
+        },
+        key: {
+          type: 'string',
+          description: 'Aniq kalit nomi (berilmasa ro‘yxat qaytariladi).',
+        },
+        collection: {
+          type: 'string',
+          description: 'Kolleksiya nomi (masalan: articles, notes).',
+        },
+        search: {
+          type: 'string',
+          description: 'Matn bo‘yicha qidiruv filtri.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maksimal natijalar soni (standart 25).',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'db_delete',
+    title: 'Bazadan o‘chirish (SQLite)',
+    description: "Server SQLite bazasidan kalit yoki yozuv ID si bo'yicha ma'lumotni o'chiradi.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        namespace: {
+          type: 'string',
+          description: 'Kalit-qiymat bo‘limi.',
+        },
+        key: {
+          type: 'string',
+          description: 'O‘chiriladigan kalit nomi.',
+        },
+        record_id: {
+          type: 'number',
+          description: 'O‘chiriladigan kolleksiya yozuvining raqamli ID si.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'db_sql',
+    title: 'SQL So‘rov (Read-only SQLite)',
+    description:
+      "Serverdagi SQLite bazasida xavfsiz o'qish (SELECT, WITH, PRAGMA) SQL so'rovini bajaradi.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sql: {
+          type: 'string',
+          description: 'Bajariladigan SELECT yoki PRAGMA so‘rovi.',
+        },
+      },
+      required: ['sql'],
+    },
+  },
+  {
+    name: 'ai_delegate',
+    title: 'Multi-AI Marshrutizator (Groq / Gemini / OpenRouter)',
+    description:
+      "Vazifa murakkabligiga qarab boshqa AI modellarga ish topshiradi: oson (easy) -> Groq API, o'rtacha (medium) -> Gemini API, qiyin (hard) -> OpenRouter API.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: 'Bajarilishi kerak bo‘lgan vazifa yoki savol.',
+        },
+        difficulty: {
+          type: 'string',
+          enum: ['auto', 'easy', 'medium', 'hard'],
+          description: 'Murakkablik darajasi (auto avtomatik aniqlaydi).',
+        },
+        provider: {
+          type: 'string',
+          enum: ['auto', 'groq', 'gemini', 'openrouter'],
+          description: 'Istalgan provayderni majburiy tanlash (ixtiyoriy).',
+        },
+        context: {
+          type: 'string',
+          description: 'Vazifaga ilova qilinadigan matn/sahifa/baza konteksti.',
+        },
+        system_instruction: {
+          type: 'string',
+          description: 'Ixtiyoriy tizim yo‘riqnomasi.',
+        },
+        json_mode: {
+          type: 'boolean',
+          description: 'Natijani qatʼiy JSON formatida olish.',
+        },
+      },
+      required: ['task'],
+    },
+  },
 ];
 
 export interface JsonRpcRequest {
@@ -283,7 +489,7 @@ export function generateClientConfig(
         url: endpointUrl,
         sseFallbackUrl: sseUrl,
         ...(authHeader ? { headers: { Authorization: `Bearer ${bearerToken}` } } : {}),
-        tools: ['web_search', 'web_fetch', 'http_request', 'extract_links', 'check_url_health', 'download_file'],
+        tools: MCP_TOOLS.map((t) => t.name),
       },
     },
   };

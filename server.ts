@@ -22,6 +22,17 @@ import {
   buildJsonRpcError,
   generateStandaloneMcpScript,
 } from './src/lib/mcpProtocol';
+import {
+  deleteKv,
+  deleteRecord,
+  getDbStats,
+  insertRecord,
+  listAiRuns,
+  listKv,
+  queryRecords,
+  upsertKv,
+} from './src/server/mcpDatabase';
+import { getProviderReadiness, runMultiAiTask } from './src/server/multiAiExecutor';
 
 dotenv.config();
 
@@ -34,7 +45,7 @@ const sseClients = new Map<string, Response>();
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '15mb' }));
 
   // CORS for remote MCP clients and Claude connectors
   app.use((req, res, next) => {
@@ -245,6 +256,98 @@ async function startServer() {
       'attachment; filename="mcp-web-bridge.mjs"'
     );
     res.send(script);
+  });
+
+  // ---------------------------------------------------------------------------
+  // 3b. Multi-AI Status & SQLite Persistence Console API
+  // ---------------------------------------------------------------------------
+  app.get('/api/ai/status', (_req: Request, res: Response) => {
+    res.json({
+      providers: getProviderReadiness(),
+      runs: listAiRuns(30),
+    });
+  });
+
+  app.post('/api/ai/delegate', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as Record<string, unknown>;
+      const result = await runMultiAiTask({
+        task: String(body.task || ''),
+        difficulty: (body.difficulty as 'auto' | 'easy' | 'medium' | 'hard') || 'auto',
+        provider: (body.provider as 'auto' | 'groq' | 'gemini' | 'openrouter') || 'auto',
+        context: typeof body.context === 'string' ? body.context : undefined,
+        systemInstruction:
+          typeof body.systemInstruction === 'string' ? body.systemInstruction : undefined,
+        jsonMode: Boolean(body.jsonMode),
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get('/api/db', (req: Request, res: Response) => {
+    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+    const collection =
+      typeof req.query.collection === 'string' ? req.query.collection : undefined;
+    const namespace =
+      typeof req.query.namespace === 'string' ? req.query.namespace : undefined;
+    res.json({
+      stats: getDbStats(),
+      kv: listKv(namespace, search, 80),
+      records: queryRecords(collection, search, 80),
+      runs: listAiRuns(40),
+    });
+  });
+
+  app.post('/api/db/kv', (req: Request, res: Response) => {
+    try {
+      const { namespace, key, value } = (req.body || {}) as {
+        namespace?: string;
+        key?: string;
+        value?: unknown;
+      };
+      const item = upsertKv(String(namespace || 'default'), String(key || ''), value ?? '');
+      res.json({ item });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete('/api/db/kv', (req: Request, res: Response) => {
+    const namespace = String(req.query.namespace || 'default');
+    const key = String(req.query.key || '');
+    const deleted = deleteKv(namespace, key);
+    res.json({ deleted });
+  });
+
+  app.post('/api/db/records', (req: Request, res: Response) => {
+    try {
+      const { collection, title, data, tags } = (req.body || {}) as {
+        collection?: string;
+        title?: string;
+        data?: unknown;
+        tags?: string;
+      };
+      const item = insertRecord(
+        String(collection || 'notes'),
+        String(title || ''),
+        data ?? '',
+        String(tags || '')
+      );
+      res.json({ item });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete('/api/db/records/:id', (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'Noto‘g‘ri ID' });
+    }
+    const deleted = deleteRecord(id);
+    res.json({ deleted });
   });
 
   // ---------------------------------------------------------------------------

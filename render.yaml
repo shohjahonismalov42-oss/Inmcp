@@ -11,3 +11,9 @@ services:
         value: 22
       - key: MCP_BLOCK_PRIVATE_NETS
         value: "true"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false

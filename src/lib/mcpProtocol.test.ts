@@ -8,7 +8,7 @@ import {
   buildJsonRpcError,
 } from './mcpProtocol';
 
-test('MCP_TOOLS defines all 5 internet tools with valid input schemas', () => {
+test('MCP_TOOLS defines all 13 tools with valid input schemas', () => {
   const names = MCP_TOOLS.map((t) => t.name);
   assert.deepEqual(names, [
     'web_search',
@@ -17,6 +17,13 @@ test('MCP_TOOLS defines all 5 internet tools with valid input schemas', () => {
     'extract_links',
     'check_url_health',
     'download_file',
+    'tts_generate',
+    'stt_transcribe',
+    'db_save',
+    'db_get',
+    'db_delete',
+    'db_sql',
+    'ai_delegate',
   ]);
   for (const tool of MCP_TOOLS) {
     assert.equal(tool.inputSchema.type, 'object');

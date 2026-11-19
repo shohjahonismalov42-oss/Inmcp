@@ -9,6 +9,8 @@ import {
   Shield,
   Globe,
   Cpu,
+  CheckCircle2,
+  CircleDashed,
 } from 'lucide-react';
 import {
   ClientConfigType,
@@ -18,9 +20,15 @@ import {
 } from '../lib/mcpProtocol';
 import { SandboxPolicy } from '../lib/mcpPolicy';
 
+export type ProviderReadinessMap = Record<
+  'groq' | 'gemini' | 'openrouter',
+  { configured: boolean; defaultModel: string }
+>;
+
 interface SetupConfigViewProps {
   originUrl: string;
   policy: SandboxPolicy;
+  providerReadiness?: ProviderReadinessMap;
   onUpdateAuth: (requireAuth: boolean, token: string) => Promise<void>;
   onGoToPlayground: () => void;
 }
@@ -34,6 +42,7 @@ const CLIENT_TABS: Array<{ id: ClientConfigType; label: string }> = [
 export function SetupConfigView({
   originUrl,
   policy,
+  providerReadiness,
   onUpdateAuth,
   onGoToPlayground,
 }: SetupConfigViewProps) {
@@ -293,6 +302,106 @@ export function SetupConfigView({
         )}
       </section>
 
+      {/* Multi-AI & Audio & SQLite Server Readiness (Read-only, env-based) */}
+      <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+        <div>
+          <h2 className="font-display text-base font-semibold text-slate-900">
+            Multi-AI Marshrutlash, Gemini TTS/STT va SQLite Baza Holati
+          </h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            API kalitlari xavfsizlik uchun faqat server muhit o&apos;zgaruvchilari (Render Environment /
+            Secrets) orqali o&apos;qiladi.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-900 whitespace-nowrap">
+                Groq · Oson
+              </span>
+              {providerReadiness?.groq.configured ? (
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 whitespace-nowrap shrink-0">
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Tayyor</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-xs text-slate-500 whitespace-nowrap shrink-0">
+                  <CircleDashed className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Kutilmoqda</span>
+                </span>
+              )}
+            </div>
+            <p className="font-mono text-xs text-slate-600 truncate">
+              {providerReadiness?.groq.defaultModel || 'llama-3.1-8b-instant'}
+            </p>
+            <p className="font-mono text-xs text-slate-400">GROQ_API_KEY</p>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-900 whitespace-nowrap">
+                Gemini · O&apos;rtacha
+              </span>
+              {providerReadiness?.gemini.configured ? (
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 whitespace-nowrap shrink-0">
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Tayyor</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-xs text-slate-500 whitespace-nowrap shrink-0">
+                  <CircleDashed className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Kutilmoqda</span>
+                </span>
+              )}
+            </div>
+            <p className="font-mono text-xs text-slate-600 truncate">
+              {providerReadiness?.gemini.defaultModel || 'gemini-4-hydrogen'} · TTS/STT
+            </p>
+            <p className="font-mono text-xs text-slate-400">GEMINI_API_KEY</p>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-900 whitespace-nowrap">
+                OpenRouter · Qiyin
+              </span>
+              {providerReadiness?.openrouter.configured ? (
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 whitespace-nowrap shrink-0">
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Tayyor</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-xs text-slate-500 whitespace-nowrap shrink-0">
+                  <CircleDashed className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Kutilmoqda</span>
+                </span>
+              )}
+            </div>
+            <p className="font-mono text-xs text-slate-600 truncate">
+              {providerReadiness?.openrouter.defaultModel || 'anthropic/claude-sonnet-4'}
+            </p>
+            <p className="font-mono text-xs text-slate-400">OPENROUTER_API_KEY</p>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-900 whitespace-nowrap">
+                SQLite Baza
+              </span>
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 whitespace-nowrap shrink-0">
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>Faol</span>
+              </span>
+            </div>
+            <p className="font-mono text-xs text-slate-600 truncate">
+              kv_store · records · ai_runs
+            </p>
+            <p className="font-mono text-xs text-slate-400">MCP_DB_PATH</p>
+          </div>
+        </div>
+      </section>
+
       {/* Client Configuration Generator */}
       <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -362,8 +471,8 @@ export function SetupConfigView({
               MCP Server Vositalari ({MCP_TOOLS.length} ta)
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Claude AI ushbu vositalarni avtomatik aniqlaydi va internetdan ma&apos;lumot olishda
-              ishlatadi.
+              Claude AI ushbu vositalarni avtomatik aniqlaydi va internet, fayl yuklash, Gemini
+              TTS/STT ovoz, SQLite baza hamda Multi-AI delegatsiya uchun ishlatadi.
             </p>
           </div>
           <button
@@ -399,7 +508,9 @@ export function SetupConfigView({
                 <p className="text-xs text-slate-600">{tool.description}</p>
               </div>
               <span className="font-mono text-xs text-slate-500 whitespace-nowrap shrink-0">
-                Majburiy: {(tool.inputSchema.required || []).join(', ')}
+                {tool.inputSchema.required && tool.inputSchema.required.length > 0
+                  ? `Majburiy: ${tool.inputSchema.required.join(', ')}`
+                  : 'Parametrlar: ixtiyoriy'}
               </span>
             </div>
           ))}
